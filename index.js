@@ -2,7 +2,7 @@ const functions = require("firebase-functions");
 const admin = require("firebase-admin");
 const axios = require("axios");
 
-const serviceAccount = require("./service-account.json");
+const serviceAccount = require("./service-account.json.json");
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
   databaseURL: "https://disiplinku-28df5-default-rtdb.firebaseio.com",
