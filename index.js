@@ -1,7 +1,6 @@
 const admin = require("firebase-admin");
 const axios = require("axios");
 
-// Gunakan environment variable untuk service account jika ada, kalau tidak fallback ke file lokal
 const serviceAccount = process.env.SERVICE_ACCOUNT 
   ? JSON.parse(process.env.SERVICE_ACCOUNT) 
   : require("./service-account.json");
@@ -16,116 +15,84 @@ const oneSignalApiKey =
   "os_v2_app_fzuymbda2naqrdbus4scb2lqhjqztvsmegkue45oyjtkcz3txgq466qr" +
   "qqczxljudorp7ec2u3d2wmxonhyqjdw3klitkacpnck3gra";
 
-// Fungsi untuk mengirim notifikasi panggilan
 async function sendCallNotificationToRecipient(recipientId, callerId, callerNameFromData, callType, callId) {
   try {
-    console.log(`Fetching user data for recipient: ${recipientId}`);
-    const recipientSnapshot = await admin.database()
-      .ref(`user-name-admin/${recipientId}`)
-      .once('value');
-    
+    const recipientSnapshot = await admin.database().ref(`user-name-admin/${recipientId}`).once('value');
     const recipientData = recipientSnapshot.val();
-    console.log(`Recipient data for ${recipientId}:`, recipientData);
     if (!recipientData?.oneSignalPlayerId) {
       console.log(`No OneSignal player ID found for user ${recipientId}`);
       return;
     }
 
     const playerId = recipientData.oneSignalPlayerId;
-
-    console.log(`Fetching caller name for callerId: ${callerId}`);
-    const callerSnapshot = await admin.database()
-      .ref(`user-name-admin/${callerId}`)
-      .once('value');
+    const callerSnapshot = await admin.database().ref(`user-name-admin/${callerId}`).once('value');
     const callerData = callerSnapshot.val();
-    console.log(`Caller data for ${callerId}:`, callerData);
     const effectiveCallerName = callerData?.name && callerData.name.trim() !== "" 
       ? callerData.name 
       : (callerNameFromData && callerNameFromData.trim() !== "" ? callerNameFromData : "User");
 
-    console.log(`Sending notification to playerId: ${playerId} with callerName: ${effectiveCallerName}`);
-
     const message = {
       app_id: oneSignalAppId,
       include_player_ids: [playerId],
-      contents: { 
-        en: `Incoming ${callType} call from ${effectiveCallerName}` 
-      },
-      headings: { 
-        en: "Incoming Call" 
-      },
-      data: {
-        callType: callType,
-        callId: callId,
-        callerName: effectiveCallerName,
-        recipientId: recipientId
-      },
+      contents: { en: `Panggilan ${callType} dari ${effectiveCallerName}` },
+      headings: { en: "Jawab Dong..." },
+      data: { callType, callId, callerName: effectiveCallerName, recipientId },
       ios_sound: "call.wav",
       android_sound: "call",
       priority: 10,
       android_vibrate: true,
       vibration_pattern: [0, 1000, 500, 1000],
       ios_badgeType: "Increase",
-      ios_badgeCount: 1
+      ios_badgeCount: 1,
+      android_channel_id: "call_channel", // Channel khusus untuk panggilan
+      buttons: [
+        { id: "answer", text: "Answer", icon: "ic_menu_call" },
+        { id: "decline", text: "Decline", icon: "ic_menu_close_clear_cancel" }
+      ],
+      large_icon: callerData?.profileImage || undefined // Foto profil pemanggil
     };
 
-    const response = await axios.post(
-      "https://onesignal.com/api/v1/notifications",
-      message,
-      {
-        headers: {
-          "Authorization": `Basic ${oneSignalApiKey}`,
-          "Content-Type": "application/json",
-        },
-      }
-    );
-    
+    const response = await axios.post("https://onesignal.com/api/v1/notifications", message, {
+      headers: { "Authorization": `Basic ${oneSignalApiKey}`, "Content-Type": "application/json" },
+    });
     console.log(`Notification sent to ${recipientId}:`, response.data);
     return response.data;
   } catch (error) {
-    console.error(
-      "Failed to send call notification:",
-      (error.response && error.response.data) || error.message
-    );
+    console.error("Failed to send call notification:", (error.response && error.response.data) || error.message);
     throw error;
   }
 }
 
-// Fungsi untuk mengirim notifikasi umum
 async function sendNotification(title, body, imageUrl) {
   const message = {
     app_id: oneSignalAppId,
     included_segments: ["All"],
     contents: { en: body },
     headings: { en: title },
+    ios_sound: "default",
+    android_sound: "default",
+    android_vibrate: true, // Tambah getar
+    vibration_pattern: [0, 500, 250, 500],
+    ios_badgeType: "Increase",
+    ios_badgeCount: 1
   };
 
   if (imageUrl) {
     message.big_picture = imageUrl;
     message.ios_attachments = { image: imageUrl };
+    message.large_icon = imageUrl; // Ikon besar dari gambar
   }
 
   try {
-    const response = await axios.post(
-      "https://onesignal.com/api/v1/notifications",
-      message,
-      {
-        headers: {
-          "Authorization": `Basic ${oneSignalApiKey}`,
-          "Content-Type": "application/json",
-        },
-      }
-    );
+    const response = await axios.post("https://onesignal.com/api/v1/notifications", message, {
+      headers: { "Authorization": `Basic ${oneSignalApiKey}`, "Content-Type": "application/json" },
+    });
     console.log("Notifikasi dikirim:", response.data);
   } catch (error) {
-    console.error(
-      "Gagal mengirim notifikasi:",
-      (error.response && error.response.data) || error.message
-    );
+    console.error("Gagal mengirim notifikasi:", (error.response && error.response.data) || error.message);
   }
 }
 
-// Listener untuk incoming calls
 console.log("Node.js server started, listening to incomingCalls...");
 const incomingCallsRef = admin.database().ref("incomingCalls");
 
@@ -133,24 +100,14 @@ incomingCallsRef.once("value", (snapshot) => {
   snapshot.forEach((recipientSnapshot) => {
     const recipientId = recipientSnapshot.key;
     console.log(`Setting up listener for recipient: ${recipientId}`);
-
     incomingCallsRef.child(recipientId).on("child_added", async (callSnapshot) => {
       const callData = callSnapshot.val();
       const callKey = callSnapshot.key;
-
-      console.log(`New incoming call for ${recipientId}:`, callData, "Key:", callKey);
       if (!callData || callData.processed) return;
 
       const { callerId, callerName, callType, callID } = callData;
-
       try {
-        await sendCallNotificationToRecipient(
-          recipientId,
-          callerId,
-          callerName,
-          callType || "voice",
-          callID
-        );
+        await sendCallNotificationToRecipient(recipientId, callerId, callerName, callType || "voice", callID);
         await incomingCallsRef.child(recipientId).child(callKey).update({ processed: true });
       } catch (error) {
         console.error(`Error processing incoming call for ${recipientId}:`, error);
@@ -159,28 +116,23 @@ incomingCallsRef.once("value", (snapshot) => {
   });
 });
 
-// Listener untuk notifikasi umum
 const notificationsRef = admin.database().ref("/notifications");
 
 notificationsRef.on("child_added", async (snapshot) => {
   const notificationData = snapshot.val();
   const notificationKey = snapshot.key;
-
   if (notificationData.sent) return;
 
   const name = notificationData.name || "Unknown";
   const date = notificationData.date || "No date";
   const imageUrl = notificationData.imageUrl || "";
-  const title = `Post Baru dari ${name}`;
-  const body = `Diposting pada ${date}`;
-
-  console.log("Data baru di /notifications:", notificationData);
+  const title = `Postingan Baru Dari ${name}`;
+  const body = `Diposting Pada ${date}`;
 
   await sendNotification(title, body, imageUrl);
   await notificationsRef.child(notificationKey).update({ sent: true });
 });
 
-// Handle shutdown
 process.on("SIGINT", () => {
   console.log("Menutup koneksi database...");
   admin.database().goOffline();
